@@ -35,16 +35,33 @@ jobs:
           chmod +x "$BIN"
           echo "PIXLET=$PWD/$BIN" >> "$GITHUB_ENV"
 
-      - name: Render the app
+      # Prints what 511 actually sends back, so the ferry app can be pinned to
+      # the right agency and stop codes. Only on manual runs. GitHub masks
+      # secrets in logs, so the token does not appear in the output.
+      - name: 511 diagnostic
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TOKEN: ${{ secrets.FIVEONEONE_TOKEN }}
         run: |
-          set -euo pipefail
-          "$PIXLET" render rialto_cerrito.star -o rialto.webp
-          ls -l rialto.webp
+          if [ -z "${TOKEN:-}" ]; then
+            echo "No FIVEONEONE_TOKEN secret set - skipping."
+            exit 0
+          fi
+          echo "===== operators ====="
+          curl -s "https://api.511.org/transit/operators?api_key=$TOKEN&format=json" \
+            | tr -d '\000' | head -c 900; echo
+          echo "===== ferry stops (operator SB) ====="
+          curl -s "https://api.511.org/transit/stops?api_key=$TOKEN&operator_id=SB&format=json" \
+            | tr -d '\000' | head -c 1500; echo
+          echo "===== StopMonitoring, stop 7211 ====="
+          curl -s "https://api.511.org/transit/StopMonitoring?api_key=$TOKEN&agency=SB&stopCode=7211&format=json" \
+            | tr -d '\000' | head -c 1800; echo
 
-      - name: Push it to the Tidbyt
+      - name: Render and push each app
         env:
           TIDBYT_API_TOKEN: ${{ secrets.TIDBYT_API_TOKEN }}
           DEVICE_ID: ${{ secrets.TIDBYT_DEVICE_ID }}
+          FIVEONEONE_TOKEN: ${{ secrets.FIVEONEONE_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${TIDBYT_API_TOKEN:-}" ] || [ -z "${DEVICE_ID:-}" ]; then
@@ -52,7 +69,20 @@ jobs:
             echo "Settings -> Secrets and variables -> Actions." >&2
             exit 1
           fi
-          "$PIXLET" push --installation-id rialto "$DEVICE_ID" rialto.webp
+
+          # push_app <file> <name shown on the device>
+          push_app () {
+            if [ ! -f "$1" ]; then
+              echo "skipping $1 - not in the repository yet"
+              return 0
+            fi
+            echo "--- $1"
+            "$PIXLET" render "$1" -o out.webp api_key="${FIVEONEONE_TOKEN:-}"
+            "$PIXLET" push --installation-id "$2" "$DEVICE_ID" out.webp
+          }
+
+          push_app rialto_cerrito.star rialto
+          push_app richmond_ferry.star richmondferry
 
   keepalive:
     if: github.event.schedule == '0 12 1 * *'
