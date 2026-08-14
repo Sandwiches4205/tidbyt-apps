@@ -1,0 +1,68 @@
+name: Rialto Cerrito to Tidbyt
+
+on:
+  schedule:
+    # Every 30 minutes, roughly 7am - 1am Pacific (GitHub cron runs in UTC).
+    - cron: "*/30 14-23,0-8 * * *"
+    # Monthly no-op commit. GitHub switches off scheduled workflows after
+    # ~60 days of repository inactivity; this keeps the clock running.
+    - cron: "0 12 1 * *"
+  # Lets you run it by hand from the Actions tab.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  push:
+    if: github.event.schedule != '0 12 1 * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pixlet
+        run: |
+          set -euo pipefail
+          curl -fsSL -o pixlet.tar.gz \
+            https://github.com/tidbyt/pixlet/releases/download/v0.34.0/pixlet_0.34.0_linux_amd64.tar.gz
+          mkdir -p pixlet-bin
+          tar -xzf pixlet.tar.gz -C pixlet-bin
+          BIN="$(find pixlet-bin -type f -name pixlet | head -1)"
+          if [ -z "$BIN" ]; then
+            echo "Could not find the pixlet binary in the download." >&2
+            exit 1
+          fi
+          chmod +x "$BIN"
+          echo "PIXLET=$PWD/$BIN" >> "$GITHUB_ENV"
+
+      - name: Render the app
+        run: |
+          set -euo pipefail
+          "$PIXLET" render rialto_cerrito.star -o rialto.webp
+          ls -l rialto.webp
+
+      - name: Push it to the Tidbyt
+        env:
+          TIDBYT_API_TOKEN: ${{ secrets.TIDBYT_API_TOKEN }}
+          DEVICE_ID: ${{ secrets.TIDBYT_DEVICE_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TIDBYT_API_TOKEN:-}" ] || [ -z "${DEVICE_ID:-}" ]; then
+            echo "Missing secrets. Add TIDBYT_API_TOKEN and TIDBYT_DEVICE_ID under" >&2
+            echo "Settings -> Secrets and variables -> Actions." >&2
+            exit 1
+          fi
+          "$PIXLET" push --installation-id rialto "$DEVICE_ID" rialto.webp
+
+  keepalive:
+    if: github.event.schedule == '0 12 1 * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Empty commit so GitHub keeps the schedule enabled
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "keep scheduled workflow alive"
+          git push
