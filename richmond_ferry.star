@@ -22,6 +22,11 @@ STOP = "7211"  # Richmond Ferry Terminal
 API = "https://api.511.org/transit/StopMonitoring?api_key=%s&agency=%s&stopCode=%s&format=json"
 TTL = 600
 
+# Richmond sees boats in both directions: one arrives from the city, then sails
+# back. Only westbound sailings are boardable here, so journeys are filtered by
+# where they are headed.
+WESTBOUND = ["francisco", "downtown", "ferry building", "sf"]
+
 RED = "#ff2d1a"
 AMBER = "#ffb000"
 WHITE = "#ffffff"
@@ -213,20 +218,32 @@ def fetch_departures(key):
     for d in as_list(delivery):
         visits.extend(as_list(d.get("MonitoredStopVisit")))
 
-    out = []
+    everything = []
+    westbound = []
     for v in visits:
-        call = v.get("MonitoredVehicleJourney", {}).get("MonitoredCall", {})
+        mvj = v.get("MonitoredVehicleJourney", {})
+        call = mvj.get("MonitoredCall", {})
         aimed = call.get("AimedDepartureTime")
         expected = call.get("ExpectedDepartureTime") or aimed
         if not aimed:
             continue
         a = time.parse_time(aimed)
         e = time.parse_time(expected)
-        out.append({
+        dep = {
             "aimed": a.in_location(TZ),
             "delay": int((e.unix - a.unix) / 60),
-        })
+        }
+        everything.append(dep)
 
+        heading = "%s %s" % (mvj.get("DestinationName", ""), mvj.get("LineRef", ""))
+        heading = heading.lower()
+        for word in WESTBOUND:
+            if heading.find(word) >= 0:
+                westbound.append(dep)
+                break
+
+    # If the naming ever changes, show everything rather than an empty screen.
+    out = westbound if westbound else everything
     return sorted(out, key = lambda d: d["aimed"].unix)
 
 def mock_departures(now):
