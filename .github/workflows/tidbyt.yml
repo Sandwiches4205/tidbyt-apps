@@ -71,13 +71,20 @@ jobs:
           fi
 
           # push_app <file> <name shown on the device>
+          #
+          # Each app is copied into an empty folder before rendering. Pixlet
+          # treats a folder as a single app, so two .star files sitting side by
+          # side make it fail with "file does not exist".
           push_app () {
             if [ ! -f "$1" ]; then
               echo "skipping $1 - not in the repository yet"
               return 0
             fi
             echo "--- $1"
-            "$PIXLET" render "$1" -o out.webp api_key="${FIVEONEONE_TOKEN:-}"
+            rm -rf ./_render
+            mkdir -p ./_render
+            cp "$1" ./_render/
+            "$PIXLET" render "./_render/$(basename "$1")" -o out.webp api_key="${FIVEONEONE_TOKEN:-}"
             "$PIXLET" push --installation-id "$2" "$DEVICE_ID" out.webp
           }
 
