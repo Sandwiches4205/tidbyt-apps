@@ -47,15 +47,18 @@ jobs:
             echo "No FIVEONEONE_TOKEN secret set - skipping."
             exit 0
           fi
-          echo "===== operators ====="
-          curl -s "https://api.511.org/transit/operators?api_key=$TOKEN&format=json" \
-            | tr -d '\000' | head -c 900; echo
-          echo "===== ferry stops (operator SB) ====="
-          curl -s "https://api.511.org/transit/stops?api_key=$TOKEN&operator_id=SB&format=json" \
-            | tr -d '\000' | head -c 1500; echo
-          echo "===== StopMonitoring, stop 7211 ====="
-          curl -s "https://api.511.org/transit/StopMonitoring?api_key=$TOKEN&agency=SB&stopCode=7211&format=json" \
-            | tr -d '\000' | head -c 1800; echo
+          # --compressed matters: 511 gzips its responses.
+          probe () {
+            echo "===== $1 ====="
+            curl -s --compressed "$2" | tr -d '\000' | head -c "$3"
+            echo; echo
+          }
+          probe "live departures, stop 7211" \
+            "https://api.511.org/transit/StopMonitoring?api_key=$TOKEN&agency=SB&stopCode=7211&format=json" 2500
+          probe "scheduled departures (StopTimetable)" \
+            "https://api.511.org/transit/StopTimetable?api_key=$TOKEN&OperatorRef=SB&MonitoringRef=7211&format=json" 2000
+          probe "ferry stops" \
+            "https://api.511.org/transit/stops?api_key=$TOKEN&operator_id=SB&format=json" 1200
 
       - name: Render and push each app
         env:
