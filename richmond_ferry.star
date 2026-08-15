@@ -19,13 +19,13 @@ load("time.star", "time")
 TZ = "America/Los_Angeles"
 AGENCY = "SB"  # San Francisco Bay Ferry, in 511's operator list
 STOP = "7211"  # Richmond Ferry Terminal
-API = "https://api.511.org/transit/StopMonitoring?api_key=%s&agency=%s&stopCode=%s&format=json"
+LIVE_API = "https://api.511.org/transit/StopMonitoring?api_key=%s&agency=%s&stopCode=%s&format=json"
+SCHED_API = "https://api.511.org/transit/StopTimetable?api_key=%s&OperatorRef=%s&MonitoringRef=%s&format=json"
 TTL = 600
 
-# Richmond sees boats in both directions: one arrives from the city, then sails
-# back. Only westbound sailings are boardable here, so journeys are filtered by
-# where they are headed.
-WESTBOUND = ["francisco", "downtown", "ferry building", "sf"]
+# Richmond sees boats both ways. 511 labels San Francisco-bound sailings "S"
+# and returning ones "N"; only the former can be boarded here.
+TO_SF = "S"
 
 RED = "#ff2d1a"
 AMBER = "#ffb000"
@@ -189,9 +189,6 @@ KbZ7M1QbQnoct2NbLyW8G99lbK7wkRT3+B/V4x9BDQ3AYCJLiwAAAABJRU5ErkJggg==
 
 # ------------------------------------------------------------------ data
 
-def api_url(key):
-    return API % (key, AGENCY, STOP)
-
 def strip_bom(s):
     """511 returns JSON with a byte-order mark that json.decode chokes on."""
     i = s.find("{")
@@ -202,48 +199,63 @@ def as_list(v):
         return []
     return v if type(v) == "list" else [v]
 
-def fetch_departures(key):
-    """[{aimed, expected, delay}] sorted by time, or None if the feed can't be read."""
-    resp = http.get(api_url(key), ttl_seconds = TTL)
+def get_json(url):
+    resp = http.get(url, ttl_seconds = TTL)
     if resp.status_code != 200:
         return None
-
     body = strip_bom(resp.body())
     if not body:
         return None
+    return json.decode(body)
 
-    data = json.decode(body)
-    delivery = data.get("ServiceDelivery", {}).get("StopMonitoringDelivery", {})
+def delivery(data, wrapper, name):
+    """Both feeds nest their payload differently; this digs it out."""
+    if data == None:
+        return []
+    root = data.get("Siri", data) if wrapper else data
+    return as_list(root.get("ServiceDelivery", {}).get(name, {}))
+
+def live_delays(key):
+    """{journey id: minutes late} from the real-time feed."""
+    data = get_json(LIVE_API % (key, AGENCY, STOP))
+    out = {}
+    for d in delivery(data, True, "StopMonitoringDelivery"):
+        for v in as_list(d.get("MonitoredStopVisit")):
+            mvj = v.get("MonitoredVehicleJourney", {})
+            call = mvj.get("MonitoredCall", {})
+            aimed = call.get("AimedDepartureTime")
+            expected = call.get("ExpectedDepartureTime")
+            ref = mvj.get("FramedVehicleJourneyRef", {}).get("DatedVehicleJourneyRef")
+            if not aimed or not expected or not ref:
+                continue
+            late = int((time.parse_time(expected).unix - time.parse_time(aimed).unix) / 60)
+            out[ref] = late
+    return out
+
+def fetch_departures(key):
+    """Today's San Francisco-bound sailings, with live delays folded in."""
+    data = get_json(SCHED_API % (key, AGENCY, STOP))
     visits = []
-    for d in as_list(delivery):
-        visits.extend(as_list(d.get("MonitoredStopVisit")))
+    for d in delivery(data, True, "StopTimetableDelivery"):
+        visits.extend(as_list(d.get("TimetabledStopVisit")))
+    if not visits:
+        return None
 
-    everything = []
-    westbound = []
+    delays = live_delays(key)
+
+    out = []
     for v in visits:
-        mvj = v.get("MonitoredVehicleJourney", {})
-        call = mvj.get("MonitoredCall", {})
-        aimed = call.get("AimedDepartureTime")
-        expected = call.get("ExpectedDepartureTime") or aimed
+        tvj = v.get("TargetedVehicleJourney", {})
+        if tvj.get("DirectionRef") != TO_SF:
+            continue
+        aimed = tvj.get("TargetedCall", {}).get("AimedDepartureTime")
         if not aimed:
             continue
-        a = time.parse_time(aimed)
-        e = time.parse_time(expected)
-        dep = {
-            "aimed": a.in_location(TZ),
-            "delay": int((e.unix - a.unix) / 60),
-        }
-        everything.append(dep)
+        out.append({
+            "aimed": time.parse_time(aimed).in_location(TZ),
+            "delay": delays.get(tvj.get("DatedVehicleJourneyRef"), 0),
+        })
 
-        heading = "%s %s" % (mvj.get("DestinationName", ""), mvj.get("LineRef", ""))
-        heading = heading.lower()
-        for word in WESTBOUND:
-            if heading.find(word) >= 0:
-                westbound.append(dep)
-                break
-
-    # If the naming ever changes, show everything rather than an empty screen.
-    out = westbound if westbound else everything
     return sorted(out, key = lambda d: d["aimed"].unix)
 
 def mock_departures(now):
