@@ -21,6 +21,11 @@ AGENCY = "SB"  # San Francisco Bay Ferry, in 511's operator list
 STOP = "7211"  # Richmond Ferry Terminal
 LIVE_API = "https://api.511.org/transit/StopMonitoring?api_key=%s&agency=%s&stopCode=%s&format=json"
 SCHED_API = "https://api.511.org/transit/StopTimetable?api_key=%s&OperatorRef=%s&MonitoringRef=%s&format=json"
+
+# Without an explicit window the timetable feed only looks an hour or so ahead,
+# which leaves the "later today" rows empty. Ask for the rest of the evening.
+WINDOW_HOURS = 10
+ISO = "2006-01-02T15:04:05Z07:00"
 TTL = 600
 
 # Richmond sees boats both ways. 511 labels San Francisco-bound sailings "S"
@@ -232,12 +237,26 @@ def live_delays(key):
             out[ref] = late
     return out
 
+def timetable_visits(key):
+    """Scheduled visits, asking for a wide window but coping if that is refused."""
+    base = SCHED_API % (key, AGENCY, STOP)
+    now = time.now()
+    window = "&StartTime=%s&EndTime=%s" % (
+        now.format(ISO),
+        (now + time.parse_duration("%dh" % WINDOW_HOURS)).format(ISO),
+    )
+
+    for url in [base + window, base]:
+        visits = []
+        for d in delivery(get_json(url), True, "StopTimetableDelivery"):
+            visits.extend(as_list(d.get("TimetabledStopVisit")))
+        if visits:
+            return visits
+    return []
+
 def fetch_departures(key):
     """Today's San Francisco-bound sailings, with live delays folded in."""
-    data = get_json(SCHED_API % (key, AGENCY, STOP))
-    visits = []
-    for d in delivery(data, True, "StopTimetableDelivery"):
-        visits.extend(as_list(d.get("TimetabledStopVisit")))
+    visits = timetable_visits(key)
     if not visits:
         return None
 
